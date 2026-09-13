@@ -264,3 +264,12 @@ canvas {
   color: rgba(232, 230, 225, 0.45);
   font-size: 0.8rem;
 }
+
+.panel button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.status a {
+  color: rgba(232, 230, 225, 0.6);
+}
