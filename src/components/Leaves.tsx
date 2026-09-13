@@ -6,9 +6,12 @@ import * as THREE from "three";
 import { OrigamiLeafGeometry } from "@/lib/OrigamiLeafGeometry";
 import { LeafTransform } from "@/lib/plantGeometry";
 import { createLeafMaterial } from "./materials";
+import { useClickGuard } from "./useClickGuard";
 
 const HOVER_COLOR = new THREE.Color("#a9ff30");
 const BASE_COLOR = new THREE.Color("#ffffff");
+/** The leaf placed but not yet confirmed, so it reads as not-yet-real. */
+const PENDING_COLOR = new THREE.Color("#ea7814");
 
 /**
  * The 2024 scene used drei's <Instances>/<Instance>, which patches per-instance
@@ -19,12 +22,17 @@ const BASE_COLOR = new THREE.Color("#ffffff");
 export default function Leaves({
   transforms,
   alphaMap,
+  pendingIndex = null,
+  onSelect,
 }: {
   transforms: LeafTransform[];
   alphaMap: THREE.Texture;
+  pendingIndex?: number | null;
+  onSelect?: (index: number) => void;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const [hovered, setHovered] = useState<number | null>(null);
+  const guard = useClickGuard();
 
   const geometry = useMemo(() => new OrigamiLeafGeometry(0.03, 20, 12, 0.01), []);
   const material = useMemo(() => createLeafMaterial(alphaMap), [alphaMap]);
@@ -57,13 +65,19 @@ export default function Leaves({
       scale.fromArray(t.scale);
       matrix.compose(position, quaternion, scale);
       mesh.setMatrixAt(i, matrix);
-      mesh.setColorAt(i, hovered === i ? HOVER_COLOR : BASE_COLOR);
+      const color =
+        i === pendingIndex ? PENDING_COLOR : hovered === i ? HOVER_COLOR : BASE_COLOR;
+      mesh.setColorAt(i, color);
     });
 
     mesh.count = transforms.length;
     mesh.instanceMatrix.needsUpdate = true;
+    // InstancedMesh.raycast tests this sphere first and caches it forever. It
+    // is computed while every instance is still at the origin, so without this
+    // no leaf is ever clickable.
+    mesh.computeBoundingSphere();
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [transforms, hovered]);
+  }, [transforms, hovered, pendingIndex]);
 
   useEffect(() => {
     document.body.style.cursor = hovered === null ? "default" : "pointer";
@@ -84,6 +98,19 @@ export default function Leaves({
         if (e.instanceId !== undefined) setHovered(e.instanceId);
       }}
       onPointerOut={() => setHovered(null)}
+      onPointerDown={(e: ThreeEvent<PointerEvent>) => {
+        if (!onSelect) return;
+        e.stopPropagation();
+        guard.onPointerDown(e);
+      }}
+      onPointerUp={(e: ThreeEvent<PointerEvent>) => {
+        if (!onSelect) return;
+        // Reading a leaf must never also place one, so the branch mesh below
+        // never sees this event.
+        e.stopPropagation();
+        if (!guard.isClick(e)) return;
+        if (e.instanceId !== undefined) onSelect(e.instanceId);
+      }}
     />
   );
 }

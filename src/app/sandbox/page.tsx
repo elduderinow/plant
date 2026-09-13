@@ -2,15 +2,15 @@
 
 import dynamic from "next/dynamic";
 
-const LiveScene = dynamic(() => import("@/components/LiveScene"), {
+const SandboxScene = dynamic(() => import("@/components/SandboxScene"), {
   ssr: false,
   loading: () => <div className="status">Growing…</div>,
 });
 
-export default function Home() {
+export default function Sandbox() {
   return (
     <main>
-      <LiveScene />
+      <SandboxScene />
     </main>
   );
 }

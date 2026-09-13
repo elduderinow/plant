@@ -3,125 +3,133 @@
 import { ThreeEvent } from "@react-three/fiber";
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
+import type { PlacedLeaf } from "@/lib/leaf";
 import {
-  createBranchesGeometry,
-  createLeafTransformsFromPositions,
-  createRandomLeafTransforms,
-  generateRandomCurve,
-  getPointsWithUpwardDirection,
-  getRandomNormalPointsAndDirection,
-  makeRandom,
-} from "@/lib/plantGeometry";
-import { TaperedTubeGeometry } from "@/lib/TaperedTubeGeometry";
+  type LeafAddress,
+  addressFromHit,
+  addressesToTransforms,
+  addressToPosition,
+  resolveSpacing,
+} from "@/lib/leafAddress";
+import type { Tree } from "@/lib/tree";
 import HoverSphere from "./HoverSphere";
 import Leaves from "./Leaves";
 import { createGlassMaterial } from "./materials";
-
-const STARTPOINT = new THREE.Vector3(0, 0, 0);
-const ENDPOINT = new THREE.Vector3(0, 1, 0);
-const STEM_BASE_RADIUS = 0.02;
-const STEM_TIP_RADIUS = 0.003;
+import { useClickGuard } from "./useClickGuard";
 
 const NO_HOVER = new THREE.Vector3();
 
+/**
+ * Presentational. It grows nothing and stores nothing: the tree comes in as
+ * geometry, the leaves come in as addresses, and placing one is reported
+ * upward. Live, archive and sandbox are all this component with different
+ * props, which is what stops the sandbox drifting away from the real scene.
+ */
 export default function Plant({
-  seed,
-  branchCount,
-  randomLeaves,
+  tree,
+  leaves,
+  pending,
   alphaMap,
+  scatter = false,
+  interactive = true,
+  onPlace,
+  onSelect,
+  onCrowded,
 }: {
-  seed: number;
-  branchCount: number;
-  randomLeaves: boolean;
+  tree: Tree;
+  leaves: PlacedLeaf[];
+  pending?: PlacedLeaf | null;
   alphaMap: THREE.Texture;
+  scatter?: boolean;
+  interactive?: boolean;
+  onPlace?: (address: LeafAddress) => void;
+  onSelect?: (leaf: PlacedLeaf) => void;
+  onCrowded?: () => void;
 }) {
   const [hoverPosition, setHoverPosition] = useState(NO_HOVER);
-  const [leafPositions, setLeafPositions] = useState<THREE.Vector3[]>([]);
-
-  const { stemGeometry, branchesGeometry, scattered } = useMemo(() => {
-    // One generator for the whole plant, so every stage of the build advances
-    // the same stream and the seed reproduces the plant exactly.
-    const random = makeRandom(seed);
-
-    const mainCurve = generateRandomCurve(4, STARTPOINT, ENDPOINT, 0.1, random);
-
-    const stem = new TaperedTubeGeometry(
-      mainCurve,
-      10,
-      STEM_BASE_RADIUS,
-      STEM_TIP_RADIUS,
-      12,
-    );
-    stem.computeVertexNormals();
-
-    const branchPoints = getRandomNormalPointsAndDirection(
-      stem,
-      branchCount,
-      STEM_BASE_RADIUS,
-      STEM_TIP_RADIUS,
-      random,
-    );
-    const upward = getPointsWithUpwardDirection(branchPoints, 0.3);
-    const branches = createBranchesGeometry(upward, random);
-
-    return {
-      stemGeometry: stem,
-      branchesGeometry: branches,
-      scattered: createRandomLeafTransforms(branches, 100, random),
-    };
-  }, [seed, branchCount]);
-
-  // A fresh plant invalidates any leaves placed on the old one.
-  useEffect(() => setLeafPositions([]), [seed, branchCount]);
-
-  useEffect(() => {
-    return () => {
-      stemGeometry.dispose();
-      branchesGeometry.dispose();
-    };
-  }, [stemGeometry, branchesGeometry]);
+  const guard = useClickGuard();
 
   const material = useMemo(() => createGlassMaterial(), []);
   useEffect(() => () => material.dispose(), [material]);
 
-  const placedLeaves = useMemo(
-    () => createLeafTransformsFromPositions(leafPositions, branchesGeometry),
-    [leafPositions, branchesGeometry],
+  const visible = useMemo(
+    () => (pending ? [...leaves, pending] : leaves),
+    [leaves, pending],
+  );
+
+  const occupied = useMemo(() => visible.map((leaf) => leaf.address), [visible]);
+
+  const transforms = useMemo(
+    () =>
+      scatter
+        ? tree.scattered
+        : addressesToTransforms(occupied, tree.branches),
+    [scatter, tree, occupied],
   );
 
   /**
-   * The 2024 version read the array, dropped its last entry and appended the
-   * new point:
-   *
-   *   currentPositions.length > 0 ? [...currentPositions.slice(0, -1), e.point] : [e.point]
-   *
-   * which pins the array at one leaf forever, so clicking only ever slid a
-   * single leaf around the plant. The store persists the array and the scene
-   * calls it leavePositions, so accumulating is clearly what was meant. Leaves
-   * accumulate here. Drop the slice back in if the original behaviour is wanted.
+   * Resolve the hit the same way on hover and on click, so the bead sits where
+   * the leaf will actually land once spacing has pushed it clear of its
+   * neighbours. Without the preview the nudge reads as the leaf jumping out
+   * from under the cursor.
    */
-  const addLeaf = (e: ThreeEvent<PointerEvent>) => {
+  const resolve = (e: ThreeEvent<PointerEvent>): LeafAddress | null => {
+    if (e.faceIndex === undefined || e.faceIndex === null) return null;
+    const hit = addressFromHit(tree.branches, e.faceIndex, e.point);
+    if (!hit) return null;
+    return resolveSpacing(hit, occupied, tree.branches);
+  };
+
+  const onPointerMove = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    setLeafPositions((prev) => [...prev, e.point.clone()]);
+    if (!interactive) return;
+
+    const address = resolve(e);
+    const position = address && addressToPosition(address, tree.branches);
+    setHoverPosition(position ?? NO_HOVER);
+  };
+
+  const onPointerUp = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    if (!interactive || !onPlace) return;
+    if (!guard.isClick(e)) return;
+
+    const address = resolve(e);
+    if (!address) {
+      onCrowded?.();
+      return;
+    }
+
+    onPlace(address);
   };
 
   return (
     <group>
-      <mesh castShadow receiveShadow geometry={stemGeometry} material={material} />
+      <mesh castShadow receiveShadow geometry={tree.stemGeometry} material={material} />
       <mesh
         castShadow
         receiveShadow
-        geometry={branchesGeometry}
+        geometry={tree.branchesGeometry}
         material={material}
-        onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-          e.stopPropagation();
-          setHoverPosition(e.point.clone());
-        }}
+        onPointerDown={(e: ThreeEvent<PointerEvent>) => guard.onPointerDown(e)}
+        onPointerMove={onPointerMove}
         onPointerOut={() => setHoverPosition(NO_HOVER)}
-        onPointerUp={addLeaf}
+        onPointerUp={onPointerUp}
       />
       <HoverSphere position={hoverPosition} />
-      <Leaves transforms={randomLeaves ? scattered : placedLeaves} alphaMap={alphaMap} />
+      <Leaves
+        transforms={transforms}
+        alphaMap={alphaMap}
+        pendingIndex={pending && !scatter ? visible.length - 1 : null}
+        onSelect={
+          scatter || !onSelect
+            ? undefined
+            : (index) => {
+                const leaf = visible[index];
+                if (leaf && !leaf.pending) onSelect(leaf);
+              }
+        }
+      />
     </group>
   );
 }

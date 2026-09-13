@@ -1,25 +1,29 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
-import { useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import Controls from "./Controls";
 import EnvironmentHdr from "./EnvironmentHdr";
 import Lights from "./Lights";
-import Plant from "./Plant";
 import Post from "./Post";
 
 type Backend = "webgpu" | "webgl";
 
-const DEFAULTS = { seed: 400, branchCount: 40 };
-
-export default function PlantScene() {
+/**
+ * Everything a plant needs around it: the renderer, the environment, the post
+ * chain and the leaf alpha map. The live scene, the archive and the sandbox all
+ * mount this and differ only in what they put inside it.
+ */
+export default function PlantCanvas({
+  children,
+}: {
+  children: (alphaMap: THREE.Texture) => ReactNode;
+}) {
   const [backend, setBackend] = useState<Backend | null>(null);
   const [failed, setFailed] = useState(false);
   const [alphaMap, setAlphaMap] = useState<THREE.Texture | null>(null);
-  const [seed, setSeed] = useState(DEFAULTS.seed);
-  const [randomLeaves, setRandomLeaves] = useState(false);
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
@@ -79,29 +83,10 @@ export default function PlantScene() {
       >
         <Controls />
         <Lights />
-        {alphaMap ? (
-          <Plant
-            seed={seed}
-            branchCount={DEFAULTS.branchCount}
-            randomLeaves={randomLeaves}
-            alphaMap={alphaMap}
-          />
-        ) : null}
+        {alphaMap ? children(alphaMap) : null}
         <EnvironmentHdr file="/hdri/potsdamer_platz_1k.hdr" blur={1} />
         <Post />
       </Canvas>
-
-      <div className="panel">
-        <button type="button" onClick={() => setSeed(Math.floor(Math.random() * 9999) + 1)}>
-          new plant
-        </button>
-        <button type="button" onClick={() => setRandomLeaves((v) => !v)}>
-          {randomLeaves ? "placed leaves" : "scatter leaves"}
-        </button>
-        <span className="seed">seed {seed}</span>
-      </div>
-
-      <p className="hint">drag to orbit · click a branch to place a leaf</p>
       {backend ? <p className="backend">{backend}</p> : null}
     </>
   );

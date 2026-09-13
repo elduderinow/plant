@@ -162,10 +162,31 @@ export function getPointsWithUpwardDirection(
   });
 }
 
-export function createBranchesGeometry(
+export const BRANCH_TUBULAR_SEGMENTS = 10;
+export const BRANCH_RADIAL_SEGMENTS = 12;
+export const BRANCH_TIP_RADIUS = 0.003;
+
+/**
+ * A branch's curve and taper, kept alongside the merged geometry. A leaf is
+ * stored as an address on one of these (branch index, t along the curve, angle
+ * around the tube) rather than as a world point, so `triangleOffset` is what
+ * turns a raycast faceIndex back into a branch. See lib/leafAddress.ts.
+ */
+export type BranchSpec = {
+  curve: CatmullRomCurve3;
+  baseRadius: number;
+  tipRadius: number;
+  /** First triangle of this branch in the merged geometry's draw order. */
+  triangleOffset: number;
+};
+
+export function createBranches(
   upwardPoints: UpwardBranchPoint[],
   random: () => number,
-): BufferGeometry {
+): { geometry: BufferGeometry; branches: BranchSpec[] } {
+  const branches: BranchSpec[] = [];
+  let triangleOffset = 0;
+
   const branchesGeometries = upwardPoints.map((point) => {
     const curve = generateRandomCurveInDirection(
       4,
@@ -175,10 +196,33 @@ export function createBranchesGeometry(
       0.04,
       random,
     );
-    return new TaperedTubeGeometry(curve, 10, point.girth - 0.001, 0.003, 12);
+    const baseRadius = point.girth - 0.001;
+    const geometry = new TaperedTubeGeometry(
+      curve,
+      BRANCH_TUBULAR_SEGMENTS,
+      baseRadius,
+      BRANCH_TIP_RADIUS,
+      BRANCH_RADIAL_SEGMENTS,
+    );
+
+    branches.push({ curve, baseRadius, tipRadius: BRANCH_TIP_RADIUS, triangleOffset });
+
+    const index = geometry.getIndex();
+    triangleOffset += index
+      ? index.count / 3
+      : geometry.getAttribute("position").count / 3;
+
+    return geometry;
   });
 
-  return mergeGeometries(branchesGeometries);
+  return { geometry: mergeGeometries(branchesGeometries), branches };
+}
+
+export function createBranchesGeometry(
+  upwardPoints: UpwardBranchPoint[],
+  random: () => number,
+): BufferGeometry {
+  return createBranches(upwardPoints, random).geometry;
 }
 
 const UP = new Vector3(0, 1, 0);
