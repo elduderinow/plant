@@ -1,5 +1,15 @@
--- Leave a message: the live tree, its leaves, and the one function that is
--- allowed to add one.
+-- Leave a message, in its own schema.
+--
+-- The Supabase project `apps` is a shared container: one schema per app, so
+-- `public` never becomes a junk drawer. Everything below lives in `plant`.
+--
+-- Two things a custom schema needs that `public` gets for free on Supabase:
+-- the anon/authenticated roles need USAGE on the schema and SELECT on the
+-- tables (RLS decides rows, grants decide whether the table is visible at all),
+-- and the schema has to be added to PostgREST's exposed list.
+
+create schema if not exists plant;
+grant usage on schema plant to anon, authenticated;
 
 create extension if not exists pgcrypto;
 
@@ -7,7 +17,7 @@ create extension if not exists pgcrypto;
 -- so nothing about a tree's shape is stored. geom_version records which
 -- generator grew it: changing the generator would otherwise silently reshape
 -- every tree already sealed.
-create table if not exists public.trees (
+create table if not exists plant.trees (
   id           uuid primary key default gen_random_uuid(),
   ordinal      int  not null unique,
   seed         int  not null,
@@ -20,11 +30,11 @@ create table if not exists public.trees (
 
 -- Only one tree is ever unsealed.
 create unique index if not exists trees_one_live
-  on public.trees ((sealed_at is null)) where sealed_at is null;
+  on plant.trees ((sealed_at is null)) where sealed_at is null;
 
-create table if not exists public.leaves (
+create table if not exists plant.leaves (
   id           uuid primary key,
-  tree_id      uuid not null references public.trees (id) on delete cascade,
+  tree_id      uuid not null references plant.trees (id) on delete cascade,
   slot         int  not null,
 
   -- Where the leaf sits, as an address on a branch rather than a world point.
@@ -52,24 +62,24 @@ create table if not exists public.leaves (
   unique (tree_id, slot)
 );
 
-create index if not exists leaves_tree on public.leaves (tree_id, slot);
-create index if not exists leaves_rate on public.leaves (ip_hash, created_at);
+create index if not exists leaves_tree on plant.leaves (tree_id, slot);
+create index if not exists leaves_rate on plant.leaves (ip_hash, created_at);
 
-alter table public.trees  enable row level security;
-alter table public.leaves enable row level security;
+alter table plant.trees  enable row level security;
+alter table plant.leaves enable row level security;
 
 -- Anyone may read. Nobody may write except through place_leaf, which is
 -- security definer, so there is no insert, update or delete policy at all.
-drop policy if exists trees_read on public.trees;
-create policy trees_read on public.trees for select using (true);
+drop policy if exists trees_read on plant.trees;
+create policy trees_read on plant.trees for select using (true);
 
-drop policy if exists leaves_read on public.leaves;
-create policy leaves_read on public.leaves for select using (true);
+drop policy if exists leaves_read on plant.leaves;
+create policy leaves_read on plant.leaves for select using (true);
 
 -- The next tree's seed comes from the one before it, so the whole history
 -- rebuilds from a single number. xorshift32, matching lib/plantGeometry's
 -- makeRandom, kept here so the database is the only thing that decides.
-create or replace function public.next_seed(previous int)
+create or replace function plant.next_seed(previous int)
 returns int
 language plpgsql
 immutable
@@ -90,16 +100,16 @@ end;
 $$;
 
 -- Grow the first tree if there is none.
-insert into public.trees (ordinal, seed)
+insert into plant.trees (ordinal, seed)
 select 1, 400
-where not exists (select 1 from public.trees);
+where not exists (select 1 from plant.trees);
 
-create or replace function public.live_tree()
-returns public.trees
+create or replace function plant.live_tree()
+returns plant.trees
 language sql
 stable
 as $$
-  select * from public.trees where sealed_at is null order by ordinal desc limit 1;
+  select * from plant.trees where sealed_at is null order by ordinal desc limit 1;
 $$;
 
 /*
@@ -109,7 +119,7 @@ $$;
  * Everything that decides whether a leaf may exist happens here, under a lock
  * on the tree row, because two people can be typing at the same moment.
  */
-create or replace function public.place_leaf(
+create or replace function plant.place_leaf(
   p_id           uuid,
   p_tree_id      uuid,
   p_branch_index int,
@@ -126,27 +136,27 @@ create or replace function public.place_leaf(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = plant, public
 as $$
 declare
-  tree     public.trees;
-  live     public.trees;
+  tree     plant.trees;
+  live     plant.trees;
   taken    int;
   recent   int;
   crowded  boolean;
 begin
-  select * into tree from public.trees where id = p_tree_id for update;
+  select * into tree from plant.trees where id = p_tree_id for update;
 
   if not found or tree.sealed_at is not null then
     -- The tree filled while they were typing. The message is not lost; the
     -- client re-places it on the tree that is live now.
-    select * into live from public.trees where sealed_at is null order by ordinal desc limit 1;
+    select * into live from plant.trees where sealed_at is null order by ordinal desc limit 1;
     return jsonb_build_object('status', 'stale', 'tree', to_jsonb(live));
   end if;
 
   if p_ip_hash is not null then
     select count(*) into recent
-      from public.leaves
+      from plant.leaves
      where ip_hash = p_ip_hash
        and created_at > now() - interval '1 hour';
 
@@ -156,7 +166,7 @@ begin
   end if;
 
   select exists (
-    select 1 from public.leaves
+    select 1 from plant.leaves
      where tree_id = tree.id
        and (px - p_px) ^ 2 + (py - p_py) ^ 2 + (pz - p_pz) ^ 2 < p_min_spacing ^ 2
   ) into crowded;
@@ -167,9 +177,9 @@ begin
     return jsonb_build_object('status', 'crowded');
   end if;
 
-  select count(*) into taken from public.leaves where tree_id = tree.id;
+  select count(*) into taken from plant.leaves where tree_id = tree.id;
 
-  insert into public.leaves (
+  insert into plant.leaves (
     id, tree_id, slot, branch_index, t, angle, px, py, pz, author, message, ip_hash
   ) values (
     p_id, tree.id, taken, p_branch_index, p_t, p_angle, p_px, p_py, p_pz,
@@ -177,12 +187,12 @@ begin
   );
 
   if taken + 1 >= tree.max_leaves then
-    update public.trees set sealed_at = now() where id = tree.id;
+    update plant.trees set sealed_at = now() where id = tree.id;
 
-    insert into public.trees (ordinal, seed, branch_count, geom_version, max_leaves)
+    insert into plant.trees (ordinal, seed, branch_count, geom_version, max_leaves)
     values (
       tree.ordinal + 1,
-      public.next_seed(tree.seed),
+      plant.next_seed(tree.seed),
       tree.branch_count,
       tree.geom_version,
       tree.max_leaves
@@ -196,16 +206,19 @@ begin
 end;
 $$;
 
-revoke all on function public.place_leaf(
+revoke all on function plant.place_leaf(
   uuid, uuid, int, double precision, double precision,
   double precision, double precision, double precision,
   text, text, text, double precision
 ) from public;
 
-grant execute on function public.place_leaf(
+grant execute on function plant.place_leaf(
   uuid, uuid, int, double precision, double precision,
   double precision, double precision, double precision,
   text, text, text, double precision
 ) to anon, authenticated;
 
-grant execute on function public.live_tree() to anon, authenticated;
+grant execute on function plant.live_tree() to anon, authenticated;
+
+-- RLS decides which rows; the grant decides whether the table is reachable.
+grant select on plant.trees, plant.leaves to anon, authenticated;

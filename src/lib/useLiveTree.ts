@@ -113,7 +113,7 @@ export function useLiveTree(): LiveTree {
         "postgres_changes",
         {
           event: "INSERT",
-          schema: "public",
+          schema: "plant",
           table: "leaves",
           filter: `tree_id=eq.${tree.id}`,
         },
@@ -129,7 +129,7 @@ export function useLiveTree(): LiveTree {
       )
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "trees" },
+        { event: "UPDATE", schema: "plant", table: "trees" },
         () => {
           void load();
         },

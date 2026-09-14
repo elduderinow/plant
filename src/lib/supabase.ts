@@ -8,7 +8,11 @@ const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
  * keeping leaves in memory. That keeps the sandbox and a bare checkout working
  * without a database behind them.
  */
-export const supabase = url && anonKey ? createClient(url, anonKey) : null;
+// Every app in the shared `apps` Supabase project gets its own schema, so the
+// client is pinned to `plant`. This covers .from() and .rpc() both; realtime
+// subscriptions carry their own schema field and are set separately.
+export const supabase =
+  url && anonKey ? createClient(url, anonKey, { db: { schema: "plant" } }) : null;
 
 export const hasSupabase = supabase !== null;
 
